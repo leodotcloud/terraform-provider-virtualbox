@@ -13,9 +13,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/pkg/errors"
 )
+
+// InvalidChecksumTypeError is returned when the passed checksum algorithm
+// type is not supported
+type InvalidChecksumTypeError string
+
+func (e InvalidChecksumTypeError) Error() string {
+	return fmt.Sprintf("invalid checksum algorithm: %q", string(e))
+}
 
 //nolint:unused
 type image struct {
@@ -26,7 +36,7 @@ type image struct {
 	// Algorithm use to check the checksum
 	ChecksumType string
 	// Internal file reference
-	file *os.File
+	file io.ReadSeeker
 }
 
 func unpackImage(image, toDir string) error {
@@ -69,17 +79,25 @@ func gatherDisks(path string) ([]string, error) {
 	}
 	disks := append(VDIs, VMDKs...)
 	if len(disks) == 0 {
-		return nil, errors.Wrapf(err,
-			"no VM disk files (*.vdi, *.vmdk) found in path '%s'", path)
+		return nil, fmt.Errorf(
+			"no VM disk files (*.vdi, *.vmdk) found in path %q", path)
 	}
-	return disks, nil
+	prioritized := ByDiskPriority(disks)
+	sort.Sort(prioritized)
+	return prioritized, nil
 }
-func (img *image) verify() error {
-	// Makes sure the file cursor is positioned at the beginning of the file
-	if _, err := img.file.Seek(0, 0); err != nil {
-		return errors.Wrap(err, "can't seek image file")
-	}
 
+// ByDiskPriority adds a simple sort to make sure that configdisk is not first
+// in the returned boot order.
+type ByDiskPriority []string
+
+func (ss ByDiskPriority) Len() int      { return len(ss) }
+func (ss ByDiskPriority) Swap(i, j int) { ss[i], ss[j] = ss[j], ss[i] }
+func (ss ByDiskPriority) Less(i, j int) bool {
+	return !strings.Contains(ss[i], "configdrive")
+}
+
+func (img *image) verify() error {
 	log.Printf("[DEBUG] Verifying image checksum...")
 	var hasher hash.Hash
 
@@ -93,7 +111,12 @@ func (img *image) verify() error {
 	case "sha512":
 		hasher = sha512.New()
 	default:
-		return fmt.Errorf(" Crypto algorithm no supported: %s", img.ChecksumType)
+		return InvalidChecksumTypeError(img.ChecksumType)
+	}
+
+	// Makes sure the file cursor is positioned at the beginning of the file
+	if _, err := img.file.Seek(0, 0); err != nil {
+		return errors.Wrap(err, "can't seek image file")
 	}
 
 	if _, err := io.Copy(hasher, img.file); err != nil {

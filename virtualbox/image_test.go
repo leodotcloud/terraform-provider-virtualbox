@@ -1,10 +1,13 @@
 package virtualbox
 
 import (
+	"errors"
 	"io/ioutil"
 	"path/filepath"
+	"sort"
 	"testing"
 
+	"github.com/go-test/deep"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -69,4 +72,71 @@ func TestUnpackImage_xz(t *testing.T) {
 		})
 
 	})
+}
+
+func TestVerify(t *testing.T) {
+	testCases := map[string]struct {
+		img image
+		err error
+	}{
+		"invalid checksum type": {
+			img: image{
+				ChecksumType: "invalid",
+			},
+			err: InvalidChecksumTypeError("invalid"),
+		},
+		// TODO: Fill this with actual test cases which test verification of the
+		//       checksums.
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			if err := tc.img.verify(); !errors.Is(err, tc.err) {
+				t.Errorf("verify() = %v, want %v", err, tc.err)
+			}
+		})
+	}
+
+}
+
+func TestGatherDisks(t *testing.T) {
+	disks, err := gatherDisks("./testdata/fakedisks")
+	if err != nil {
+		t.Fatalf("unable to gether disks: %v", err)
+	}
+
+	want := []string{
+		"testdata/fakedisks/ubuntu-cloudimg.vmdk",
+		"testdata/fakedisks/ubuntu-cloudimg-configdrive.vmdk",
+	}
+
+	if diff := deep.Equal(disks, want); diff != nil {
+		t.Errorf("gatherDisks() diff = %v", diff)
+	}
+}
+
+func TestByDiskPriority(t *testing.T) {
+	testCases := map[string]struct {
+		in   []string
+		want []string
+	}{
+		"good order in": {
+			[]string{"ubuntu-cloudimg.vmdk", "ubuntu-cloudimg-configdrive.vmdk"},
+			[]string{"ubuntu-cloudimg.vmdk", "ubuntu-cloudimg-configdrive.vmdk"},
+		},
+		"bad order in": {
+			[]string{"ubuntu-cloudimg-configdrive.vmdk", "ubuntu-cloudimg.vmdk"},
+			[]string{"ubuntu-cloudimg.vmdk", "ubuntu-cloudimg-configdrive.vmdk"},
+		},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			got := ByDiskPriority(tc.in)
+			sort.Sort(got)
+			if diff := deep.Equal([]string(got), tc.want); diff != nil {
+				t.Errorf("ByDiskPriority() diff = %v", diff)
+			}
+		})
+	}
 }
